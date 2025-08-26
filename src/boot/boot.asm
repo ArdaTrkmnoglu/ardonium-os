@@ -42,6 +42,113 @@ main:
 	mov  si, boot_msg
 	call print
 	
+	mov  ax, [bdb_sectors_per_fat]
+	mov  bl, [bdb_fat_count]
+	xor  bh, bh
+	add  ax, [bdb_reserved_sectors]												; LBA of the root
+	push ax
+
+	mov  ax, [bdb_dir_entries_count]
+	shl  ax, 5
+	xor  dx, dx
+	div  word [bdb_bytes_per_sector]
+
+	test dx, dx
+	jz   root_dir_read
+	inc  ax
+
+root_dir_read:
+	mov  cl, al
+	pop  ax
+	mov  dl, [ebr_drive_number]
+	mov  bx, buffer
+	call disk_read
+
+	xor  bx, bx
+	mov  di, buffer
+
+search_kernel:
+	mov  si, file_kernel_bin
+	mov  cx, 11
+	push di
+	repe cmpsb
+	pop  di
+	je   found_kernel
+
+	add  di, 32
+	inc  bx
+	cmp  bx, [bdb_dir_entries_count]
+	jl   search_kernel
+
+	jmp  kernel_not_found
+
+kernel_not_found:
+	mov  si, msg_kernel_not_found
+	call print
+
+	hlt
+	jmp  halt
+
+found_kernel:
+	mov  ax, [di + 26]
+	mov  [kernel_cluster], ax
+
+	mov  ax, [bdb_reserved_sectors]
+	mov  bx, buffer
+	mov  cl, [bdb_sectors_per_fat]
+	mov  dl, [ebr_drive_number]
+
+	call disk_read
+
+	mov  bx, kernel_load_segment
+	mov  es, bx
+	mov  bx, kernel_load_offset
+
+load_kernel_loop:
+	mov  ax, [kernel_cluster]
+	add  ax, 31																	; 31
+	mov  cl, 1
+	mov  dl, [ebr_drive_number]
+
+	call disk_read
+
+	add  bx, [bdb_bytes_per_sector]
+
+	mov  ax, [kernel_cluster]
+	mov  cx, 3
+	mul  cx
+	mov  cx, 2
+	div  cx
+
+	mov  si, buffer
+	add  si, ax
+	mov  ax, [ds:si]
+
+	or   dx, dx
+	jz   even
+
+odd:
+	shr  ax, 4
+	jmp  next_cluster_after
+
+even:
+	and  ax, 0x0fff
+
+next_cluster_after:
+	cmp  ax, 0x0ff8
+	jae  read_finish
+
+	mov  [kernel_cluster], ax
+	jmp  load_kernel_loop
+
+read_finish:
+	mov  dl, [ebr_drive_number]
+	mov  ax, kernel_load_segment
+	mov  ds, ax
+	mov  es, ax
+
+	jmp  kernel_load_segment:kernel_load_offset
+
 	hlt
 
 halt:
@@ -143,7 +250,14 @@ done_print:
 
 boot_msg: 					db "Loading...", 0x0d, 10, 0
 read_failure_msg:			db "Disk read failed!", 0x0d, 10, 0
+file_kernel_bin: 			db "KERNEL__BIN"
+msg_kernel_not_found:		db "KERNEL.BIN not found!"
+kernel_cluster:				dw 0
+
+kernel_load_segment			equ 0x2000
+kernel_load_offset			equ 0
 
 times 510 - ($ - $$) 		db 0												; boot signature
 dw 0x0aa55
 
+buffer:
